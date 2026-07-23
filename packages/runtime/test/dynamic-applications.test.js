@@ -3,7 +3,7 @@ import { once } from 'node:events'
 import { join } from 'node:path'
 import { test } from 'node:test'
 import { request } from 'undici'
-import { prepareApplication } from '../index.js'
+import { prepareApplication, transform } from '../index.js'
 import { createRuntime, sleep } from './helpers.js'
 
 const fixturesDir = join(import.meta.dirname, '..', 'fixtures')
@@ -365,6 +365,51 @@ test('vertical autoscaler should work properly when adding and removing applicat
 
   // Wait for few cycles of vertical autoscaler
   await sleep(10000)
+})
+
+test('vertical autoscaler applies minimum workers after adding an application', async t => {
+  const configFile = join(fixturesDir, 'dynamic-applications')
+  const runtime = await createRuntime(configFile, null, {
+    async transform (config, ...args) {
+      config = await transform(config, ...args)
+      config.managementApi = false
+      config.metrics = false
+      config.preload = []
+      return config
+    }
+  })
+
+  t.after(async () => {
+    await runtime.close()
+  })
+
+  await runtime.start()
+
+  const updatedPromise = once(runtime, 'application:resources:workers:updated')
+  const restartPromise = once(runtime, 'application:restarted')
+  const config = runtime.getRuntimeConfig(true)
+
+  await runtime.addApplications(
+    [
+      await prepareApplication(
+        config,
+        {
+          id: 'application-2',
+          path: './application-2',
+          workers: { dynamic: true, minimum: 2 }
+        },
+        config.workers
+      )
+    ],
+    true
+  )
+
+  await updatedPromise
+  await restartPromise
+
+  const workers = await runtime.getWorkers()
+  const applicationWorkers = Object.values(workers).filter(worker => worker.application === 'application-2')
+  deepStrictEqual(applicationWorkers.length, 2)
 })
 
 test('should be able to remove a stopped application', async t => {
